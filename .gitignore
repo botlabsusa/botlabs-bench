@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+.env
+.Python
+
+# Build / dist
+build/
+build-linux/
+dist/
+dist-linux/
+dist-win/
+*.AppImage
+*.exe
+*.spec
+AppDir/
+**/BotlabsBench.AppDir/
+
+# Tools downloaded by build scripts
+tools/appimagetool*
+
+# Runtime output
+BenchResults/
+*.log
+
+# Archives / backups
+*.tgz
+*.tar.gz
+*.zip
+*.bak
+*~
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
