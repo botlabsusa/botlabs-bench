@@ -1,5 +1,7 @@
 # Botlabs Bench
 
+[![Support on Patreon](https://img.shields.io/badge/Patreon-Support%20Botlabs-F96854?logo=patreon&logoColor=white)](https://www.patreon.com/botlabs)
+
 Botlabs Bench is a portable, cross-platform PC hardware benchmark for Windows and Linux. It measures CPU, memory, disk, network, and GPU performance in one app, with live progress graphs and offline HTML, CSV, XLSX, and JSON reports. No installer is required: download a single executable (Windows) or AppImage (Linux) and run it.
 
 Use it to baseline a new machine, compare upgrades, or spot thermal throttling and storage bottlenecks. Results stay on your computer in a `BenchResults` folder next to the app. A built-in Compare view places multiple runs side by side and warns when benchmark versions differ so scores are not mixed incorrectly.
@@ -113,3 +115,7 @@ PYTHONPATH=src python src/main.py --headless --mode custom --tests cpu,memory --
 ## License
 
 MIT License. Copyright (c) 2026 Botlabs USA. See [LICENSE](LICENSE).
+
+## Support Botlabs
+
+Botlabs apps are free. If they help you, consider supporting development on [Patreon](https://www.patreon.com/botlabs) for early builds, feature votes and your name in the app credits.
