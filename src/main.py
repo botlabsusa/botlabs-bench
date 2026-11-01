@@ -49,7 +49,10 @@ def _setup_logging() -> Path:
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Botlabs Bench - portable cross-platform benchmark")
+    p = argparse.ArgumentParser(
+        description="Botlabs Bench - portable cross-platform benchmark",
+        epilog="Support: support@botlabsusa.com",
+    )
     p.add_argument("--headless", action="store_true", help="Run without GUI")
     p.add_argument("--mode", choices=["quick", "detailed", "custom"], default="custom")
     p.add_argument(

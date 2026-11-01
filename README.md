@@ -116,6 +116,10 @@ PYTHONPATH=src python src/main.py --headless --mode custom --tests cpu,memory --
 
 MIT License. Copyright (c) 2026 Botlabs USA. See [LICENSE](LICENSE).
 
+## Help & contact
+
+Support: support@botlabsusa.com
+
 ## Support Botlabs
 
 Botlabs apps are free. If they help you, consider supporting development on [Patreon](https://www.patreon.com/botlabs) for early builds, feature votes and your name in the app credits.
