@@ -2,6 +2,14 @@
 
 All notable changes to Botlabs Bench are documented here.
 
+## 1.2.0
+
+- Professional dark GUI redesign with a cleaner layout and consistent theme.
+- App opens maximized; Windows build requests administrator rights on launch.
+- Results summary panel stays visible beside the live graph; graph has a separate GPU FPS axis.
+- Hidden `--render-snapshots` and `--site-shots` modes for UI verification and website images.
+- Support contact `support@botlabsusa.com` in README and CLI help.
+
 ## 1.1.1
 
 - Hidden `--gui-selftest` automation hook (optional `--selftest-stop-after`, `--selftest-tests`, `--selftest-timeout`) opens the GUI, starts a short Custom run, presses Stop, and verifies graphs and partial reports.

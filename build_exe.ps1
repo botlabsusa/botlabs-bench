@@ -1,4 +1,4 @@
-# Build BotlabsBench.exe with PyInstaller (run from the repo root)
+# Build BotlabsBench.exe with PyInstaller (run inside C:\Tools\BenchBuild)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -18,13 +18,21 @@ $glfwDir = Join-Path $PSScriptRoot "venv\Lib\site-packages\glfw"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build
 Remove-Item -Force -ErrorAction SilentlyContinue BotlabsBench.spec
 
-Write-Host "Running PyInstaller (onefile, console for headless+GUI)..."
+Write-Host "Running PyInstaller (onefile, console, UAC admin for headless+GUI)..."
 & $venvPython -m PyInstaller `
   --noconfirm `
   --clean `
   --onefile `
   --console `
   --name BotlabsBench `
+  --uac-admin `
+  --icon "$PSScriptRoot\assets\botlabsbench.ico" `
+  --add-data "$PSScriptRoot\assets\botlabsbench.ico;assets" `
+  --add-data "$PSScriptRoot\assets\botlabsbench-128.png;assets" `
+  --add-data "$PSScriptRoot\assets\botlabsbench.png;assets" `
+  --hidden-import theme `
+  --hidden-import sv_ttk `
+  --collect-all sv_ttk `
   --paths $src `
   --hidden-import numpy `
   --hidden-import psutil `

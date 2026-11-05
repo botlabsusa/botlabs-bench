@@ -26,6 +26,21 @@ from compare import compare_runs
 from runner import BenchmarkRunner
 from sensors import is_admin
 from tests.disk import list_candidate_drives
+from theme import (
+    ACCENT,
+    FG_MUTED,
+    PLOT_BG,
+    PLOT_CPU,
+    PLOT_DISK,
+    PLOT_FPS,
+    PLOT_MEM,
+    admin_status_text,
+    apply_theme,
+    set_window_icon,
+    style_matplotlib,
+    temps_status_short,
+    ui_font,
+)
 from validate import (
     MAX_HOURS,
     MAX_MINUTES,
@@ -90,10 +105,19 @@ class BotlabsBenchApp:
         self._selftest = bool(selftest)
         self._selftest_exit_code = 1
         self._selftest_result_path: Optional[Path] = None
+        # DPI awareness before any Tk window metrics (Windows)
+        try:
+            _enable_dpi_awareness()
+        except Exception:
+            pass
         self.root = Tk()
-        self.root.title("Botlabs Bench")
-        self.root.geometry("980x720")
-        self.root.minsize(860, 640)
+        self.root.title(f"Botlabs Bench {APP_VERSION}")
+        # Restored (non-maximized) size must already fit graph + results; minsize
+        # is a floor so users cannot crush the bottom pane.
+        self.root.geometry("1120x780")
+        self.root.minsize(1020, 740)
+        self._theme_backend = apply_theme(self.root)
+        self._icon_path = set_window_icon(self.root)
         if self._selftest:
             _install_silent_dialogs()
 
@@ -118,164 +142,385 @@ class BotlabsBenchApp:
         self.lan_enabled = BooleanVar(value=bool(lan_candidates))
 
         self.status_text = StringVar(value="Ready")
-        self.current_test = StringVar(value="-")
+        self.current_test = StringVar(value="—")
         self.overall_pct = DoubleVar(value=0.0)
         self.test_pct = DoubleVar(value=0.0)
-        self.eta_text = StringVar(value="-")
-        try:
-            from sensors import temps_status_message
-
-            _temps_init = temps_status_message()
-        except Exception:
-            _temps_init = (
-                "Temps: available (admin or LibreHardwareMonitor service)"
-                if is_admin()
-                else "Temps: unavailable without admin / sensor service - scores still work"
-            )
-        self.temps_text = StringVar(value=_temps_init)
+        self.eta_text = StringVar(value="—")
+        self.admin_text = StringVar(value=admin_status_text())
+        self.temps_short = StringVar(value=temps_status_short())
+        self._last_html_path: Optional[Path] = None
+        self.temps_text = StringVar(value=temps_status_short())  # kept for demo helpers
+        self.temps_short.set(temps_status_short())
+        self.results_status = StringVar(value="No results yet")
+        self.results_hint = StringVar(value="Start a run to see scores here.")
 
         self._runner: Optional[BenchmarkRunner] = None
         self._thread: Optional[threading.Thread] = None
         self._run_started = 0.0
         self._planned_duration = 0.0
+        self._last_run_state: Optional[dict[str, Any]] = None
         self._building_ui()
         self._building_plots()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _building_ui(self) -> None:
-        pad = {"padx": 8, "pady": 4}
-        top = ttk.Frame(self.root, padding=10)
-        top.pack(fill="x")
+        pad_x, pad_y = 12, 5
+        shell = ttk.Frame(self.root, padding=(14, 8, 14, 8))
+        shell.pack(fill="both", expand=True)
+        # Keep a handle so snapshot helpers can re-weight the bottom pane if needed.
+        self._shell = shell
+        self._pad_y = pad_y
 
-        ttk.Label(top, text="Botlabs Bench", font=("Segoe UI", 16, "bold")).pack(anchor="w")
-        ttk.Label(top, textvariable=self.temps_text, foreground="#666").pack(anchor="w")
+        # ---- Header ----
+        header = ttk.Frame(shell)
+        header.pack(fill="x", pady=(0, 6))
+        # Pack right FIRST so admin/temps pills keep their natural width (never clip).
+        right = ttk.Frame(header)
+        right.pack(side="right", anchor="center", padx=(12, 0))
+        left = ttk.Frame(header)
+        left.pack(side="left", fill="x", expand=True)
+        title_row = ttk.Frame(left)
+        title_row.pack(anchor="w")
+        # Optional small logo next to title
+        try:
+            from tkinter import PhotoImage
+            from theme import asset_path
 
-        mode_fr = ttk.LabelFrame(self.root, text="Run mode", padding=10)
-        mode_fr.pack(fill="x", **pad)
-        for val, label in (
-            ("quick", "Quick (10 minutes)"),
-            ("detailed", "Detailed (1 hour)"),
-            ("custom", "Custom"),
+            logo_path = asset_path("botlabsbench-128.png")
+            if not logo_path.is_file():
+                logo_path = asset_path("botlabsbench.png")
+            if logo_path.is_file():
+                try:
+                    from PIL import Image, ImageTk
+                    im = Image.open(logo_path).convert("RGBA").resize((40, 40), Image.Resampling.LANCZOS)
+                    self._logo_img = ImageTk.PhotoImage(im)
+                except Exception:
+                    self._logo_img = PhotoImage(file=str(logo_path)).subsample(3, 3)
+                ttk.Label(title_row, image=self._logo_img).pack(side="left", padx=(0, 10))
+        except Exception:
+            pass
+        titles = ttk.Frame(title_row)
+        titles.pack(side="left")
+        ttk.Label(titles, text="Botlabs Bench", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            titles,
+            text=f"v{APP_VERSION}  ·  PC benchmark for Windows and Linux",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w")
+        # Status pills (admin + temps) — compact row; right already packed above
+        admin_style = "PillAdmin.TLabel" if "Administrator" in (self.admin_text.get() or "") else "PillUser.TLabel"
+        self.admin_pill = ttk.Label(right, textvariable=self.admin_text, style=admin_style)
+        self.admin_pill.pack(side="left", padx=(0, 6))
+        self.temps_pill = ttk.Label(right, textvariable=self.temps_short, style="PillTemps.TLabel")
+        self.temps_pill.pack(side="left")
+
+        # ---- Mode selector ----
+        self.mode_fr = ttk.LabelFrame(shell, text="Run mode", padding=8, style="Card.TLabelframe")
+        self.mode_fr.pack(fill="x", pady=(0, pad_y))
+        mode_inner = ttk.Frame(self.mode_fr)
+        mode_inner.pack(fill="x")
+        for val, label, hint in (
+            ("quick", "Quick", "≈ 10 minutes · all tests"),
+            ("detailed", "Detailed", "≈ 1 hour · all tests"),
+            ("custom", "Custom", "pick tests & duration"),
         ):
+            card = ttk.Frame(mode_inner, padding=(8, 4))
+            card.pack(side="left", padx=(0, 18))
             ttk.Radiobutton(
-                mode_fr, text=label, value=val, variable=self.mode, command=self._mode_changed
-            ).pack(side="left", padx=8)
+                card,
+                text=label,
+                value=val,
+                variable=self.mode,
+                command=self._mode_changed,
+            ).pack(anchor="w")
+            ttk.Label(card, text=hint, style="Muted.TLabel").pack(anchor="w")
 
-        self.custom_fr = ttk.LabelFrame(self.root, text="Custom options", padding=10)
-        self.custom_fr.pack(fill="x", **pad)
+        # ---- Custom options (hidden unless Custom) ----
+        self.custom_fr = ttk.LabelFrame(shell, text="Custom options", padding=8, style="Card.TLabelframe")
+        # packed/unpacked in _mode_changed
 
         row1 = ttk.Frame(self.custom_fr)
         row1.pack(fill="x")
-        ttk.Label(row1, text="Hours:").pack(side="left")
+        ttk.Label(row1, text="Duration", width=11).pack(side="left")
+        ttk.Label(row1, text="Hours").pack(side="left", padx=(0, 4))
         self.hours_spin = ttk.Spinbox(
             row1,
             from_=MIN_HOURS,
             to=MAX_HOURS,
             textvariable=self.custom_hours,
-            width=5,
+            width=6,
             command=self._on_custom_changed,
         )
-        self.hours_spin.pack(side="left", padx=4)
+        self.hours_spin.pack(side="left", padx=(0, 16))
         self.hours_spin.bind("<FocusOut>", lambda e: self._sanitize_spin("hours"))
         self.hours_spin.bind("<Return>", lambda e: self._sanitize_spin("hours"))
-        ttk.Label(row1, text="Minutes:").pack(side="left")
+        ttk.Label(row1, text="Minutes").pack(side="left", padx=(0, 4))
         self.mins_spin = ttk.Spinbox(
             row1,
             from_=MIN_MINUTES,
             to=MAX_MINUTES,
             textvariable=self.custom_minutes,
-            width=5,
+            width=6,
             command=self._on_custom_changed,
         )
-        self.mins_spin.pack(side="left", padx=4)
+        self.mins_spin.pack(side="left", padx=(0, 16))
         self.mins_spin.bind("<FocusOut>", lambda e: self._sanitize_spin("minutes"))
         self.mins_spin.bind("<Return>", lambda e: self._sanitize_spin("minutes"))
         ttk.Checkbutton(
             row1,
-            text="Single pass (quick check, ignore duration)",
+            text="Single pass (ignore duration)",
             variable=self.single_pass,
             command=self._on_custom_changed,
-        ).pack(side="left", padx=12)
+        ).pack(side="left")
 
         self.custom_hint = StringVar(value=duration_hint(5))
         ttk.Label(
             self.custom_fr,
             textvariable=self.custom_hint,
-            foreground="#555",
-            wraplength=900,
+            style="Muted.TLabel",
+            wraplength=1000,
             justify="left",
-        ).pack(anchor="w", pady=(6, 0))
+        ).pack(anchor="w", pady=(4, 2))
 
         row2 = ttk.Frame(self.custom_fr)
-        row2.pack(fill="x", pady=6)
-        ttk.Label(row2, text="Tests:").pack(side="left")
-        ttk.Checkbutton(row2, text="CPU", variable=self.test_cpu).pack(side="left", padx=6)
-        ttk.Checkbutton(row2, text="Memory", variable=self.test_memory).pack(side="left", padx=6)
-        ttk.Checkbutton(row2, text="Disk", variable=self.test_disk).pack(side="left", padx=6)
-        ttk.Checkbutton(row2, text="Network", variable=self.test_network).pack(side="left", padx=6)
-        ttk.Checkbutton(row2, text="Graphics", variable=self.test_gpu).pack(side="left", padx=6)
+        row2.pack(fill="x", pady=(4, 0))
+        ttk.Label(row2, text="Tests", width=11).pack(side="left")
+        for text_lbl, var in (
+            ("CPU", self.test_cpu),
+            ("Memory", self.test_memory),
+            ("Disk", self.test_disk),
+            ("Network", self.test_network),
+            ("Graphics", self.test_gpu),
+        ):
+            ttk.Checkbutton(row2, text=text_lbl, variable=var).pack(side="left", padx=(0, 12))
 
         row3 = ttk.Frame(self.custom_fr)
-        row3.pack(fill="x", pady=4)
-        ttk.Label(row3, text="Disk test mount/drive:").pack(side="left")
-        ttk.Combobox(row3, textvariable=self.disk_drive, values=self.drive_labels, width=28, state="readonly").pack(
-            side="left", padx=6
-        )
-        ttk.Checkbutton(row3, text="LAN/NAS test on:", variable=self.lan_enabled).pack(side="left", padx=8)
+        row3.pack(fill="x", pady=(6, 0))
+        ttk.Label(row3, text="Disk mount", width=11).pack(side="left")
+        ttk.Combobox(
+            row3, textvariable=self.disk_drive, values=self.drive_labels, width=32, state="readonly"
+        ).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(row3, text="LAN / NAS on", variable=self.lan_enabled).pack(side="left", padx=(0, 8))
         lan_vals = [x for x in self.drive_labels if not _is_system_root_label(x)] or ["(none)"]
-        ttk.Combobox(row3, textvariable=self.lan_drive, values=lan_vals, width=28, state="readonly").pack(
-            side="left", padx=4
-        )
+        ttk.Combobox(
+            row3, textvariable=self.lan_drive, values=lan_vals, width=32, state="readonly"
+        ).pack(side="left")
 
-        prog = ttk.LabelFrame(self.root, text="Progress", padding=10)
-        prog.pack(fill="x", **pad)
-        ttk.Label(prog, text="Current:").grid(row=0, column=0, sticky="w")
-        ttk.Label(prog, textvariable=self.current_test).grid(row=0, column=1, sticky="w")
-        ttk.Label(prog, text="Test").grid(row=1, column=0, sticky="w")
-        self.test_bar = ttk.Progressbar(prog, variable=self.test_pct, maximum=100, length=400)
-        self.test_bar.grid(row=1, column=1, sticky="ew", padx=6)
-        self.test_pct_lbl = ttk.Label(prog, text="0%")
-        self.test_pct_lbl.grid(row=1, column=2)
-        ttk.Label(prog, text="Overall").grid(row=2, column=0, sticky="w")
-        self.overall_bar = ttk.Progressbar(prog, variable=self.overall_pct, maximum=100, length=400)
-        self.overall_bar.grid(row=2, column=1, sticky="ew", padx=6)
-        self.overall_pct_lbl = ttk.Label(prog, text="0%")
-        self.overall_pct_lbl.grid(row=2, column=2)
-        ttk.Label(prog, text="ETA").grid(row=3, column=0, sticky="w")
-        ttk.Label(prog, textvariable=self.eta_text).grid(row=3, column=1, sticky="w")
-        ttk.Label(prog, textvariable=self.status_text).grid(row=4, column=0, columnspan=3, sticky="w", pady=4)
+        # ---- Progress ----
+        prog = ttk.LabelFrame(shell, text="Progress", padding=8, style="Card.TLabelframe")
+        prog.pack(fill="x", pady=(0, pad_y))
         prog.columnconfigure(1, weight=1)
 
-        btns = ttk.Frame(self.root, padding=10)
-        btns.pack(fill="x")
-        self.start_btn = ttk.Button(btns, text="Start", command=self._start)
-        self.start_btn.pack(side="left", padx=4)
-        self.stop_btn = ttk.Button(btns, text="Stop / Save partial", command=self._stop, state="disabled")
-        self.stop_btn.pack(side="left", padx=4)
-        ttk.Button(btns, text="Open results folder", command=self._open_results).pack(side="left", padx=4)
-        ttk.Button(btns, text="Compare runs...", command=self._compare).pack(side="left", padx=4)
+        ttk.Label(prog, text="Current", style="Progress.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 10), pady=2
+        )
+        ttk.Label(prog, textvariable=self.current_test, style="Progress.TLabel").grid(
+            row=0, column=1, sticky="w", pady=2
+        )
 
-        self.plot_fr = ttk.LabelFrame(self.root, text="Live sensors", padding=6)
-        self.plot_fr.pack(fill="both", expand=True, **pad)
+        ttk.Label(prog, text="Test", style="Progress.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        self.test_bar = ttk.Progressbar(
+            prog, variable=self.test_pct, maximum=100, style="Accent.Horizontal.TProgressbar"
+        )
+        self.test_bar.grid(row=1, column=1, sticky="ew", pady=4)
+        self.test_pct_lbl = ttk.Label(prog, text="0%", width=5, style="Progress.TLabel")
+        self.test_pct_lbl.grid(row=1, column=2, sticky="e", padx=(8, 0))
+
+        ttk.Label(prog, text="Overall", style="Progress.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        self.overall_bar = ttk.Progressbar(
+            prog, variable=self.overall_pct, maximum=100, style="Accent.Horizontal.TProgressbar"
+        )
+        self.overall_bar.grid(row=2, column=1, sticky="ew", pady=4)
+        self.overall_pct_lbl = ttk.Label(prog, text="0%", width=5, style="Progress.TLabel")
+        self.overall_pct_lbl.grid(row=2, column=2, sticky="e", padx=(8, 0))
+
+        ttk.Label(prog, text="ETA", style="Progress.TLabel").grid(
+            row=3, column=0, sticky="w", padx=(0, 10), pady=2
+        )
+        ttk.Label(prog, textvariable=self.eta_text, style="Progress.TLabel").grid(
+            row=3, column=1, sticky="w", pady=2
+        )
+        ttk.Label(prog, textvariable=self.status_text, style="ProgressMuted.TLabel").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+        )
+
+        # ---- Actions ----
+        btns = ttk.Frame(shell)
+        btns.pack(fill="x", pady=(0, pad_y))
+        self.start_btn = ttk.Button(btns, text="Start", style="Accent.TButton", command=self._start)
+        self.start_btn.pack(side="left", padx=(0, 8))
+        self.stop_btn = ttk.Button(
+            btns, text="Stop / Save partial", command=self._stop, state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Open results folder", command=self._open_results).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(btns, text="Compare runs…", command=self._compare).pack(side="left")
+
+        # ---- Body: graphs + results (Panedwindow — results never collapses to 0) ----
+        # Matplotlib canvases request huge widths on maximized / high-DPI Windows and can
+        # squeeze a grid sibling away. Horizontal Panedwindow + minsize keeps Results visible.
+        self._RESULTS_PANE_MIN = 360
+        self._RESULTS_PANE_RATIO = 0.35  # ~65/35 graph | results
+        body = ttk.Panedwindow(shell, orient="horizontal")
+        body.pack(fill="both", expand=True)
+        self._body = body
+
+        self.plot_fr = ttk.LabelFrame(body, text="Live sensors", padding=6, style="Card.TLabelframe")
+        # Legend row ABOVE the matplotlib canvas (never covers lines / never clips)
+        self.plot_legend = ttk.Frame(self.plot_fr)
+        self.plot_legend.pack(side="top", fill="x", pady=(0, 4))
+
+        self.results_fr = ttk.LabelFrame(
+            body, text="Results summary", padding=8, style="Card.TLabelframe"
+        )
+        try:
+            body.add(self.plot_fr, weight=3)
+            body.add(self.results_fr, weight=2)
+        except TypeError:
+            body.add(self.plot_fr)
+            body.add(self.results_fr)
+        try:
+            body.pane(self.results_fr, minsize=self._RESULTS_PANE_MIN)
+        except Exception:
+            pass
+        try:
+            body.pane(self.plot_fr, minsize=280)
+        except Exception:
+            pass
+        self.root.bind("<Configure>", self._on_root_configure_panes, add="+")
+        self.root.after_idle(self._ensure_results_pane)
+        # Top-anchored content (status + metric table + report button); spacer keeps it at top
+        self.results_top = ttk.Frame(self.results_fr)
+        self.results_top.pack(side="top", anchor="nw", fill="x")
+        self.results_status_lbl = ttk.Label(
+            self.results_top, textvariable=self.results_status, style="StatusLine.TLabel"
+        )
+        self.results_status_lbl.pack(anchor="w", pady=(0, 2))
+        self.results_hint_lbl = ttk.Label(
+            self.results_top, textvariable=self.results_hint, style="Muted.TLabel", wraplength=320
+        )
+        self.results_hint_lbl.pack(anchor="w", pady=(0, 8))
+        self.results_table = ttk.Frame(self.results_top)
+        self.results_table.pack(anchor="nw", fill="x")
+        self.results_table.columnconfigure(0, weight=0, minsize=120)
+        self.results_table.columnconfigure(1, weight=1)
+        self._results_row_widgets: list = []
+        self.html_btn = ttk.Button(
+            self.results_top,
+            text="Open HTML report",
+            style="Link.TButton",
+            command=self._open_last_html,
+            state="disabled",
+        )
+        self.html_btn.pack(anchor="w", pady=(10, 0))
+        ttk.Frame(self.results_fr).pack(side="bottom", fill="both", expand=True)
+
         self._mode_changed()
+
+    def _on_root_configure_panes(self, event=None) -> None:
+        """When the main window resizes (incl. maximize), keep the results sash sane."""
+        try:
+            if event is not None and event.widget is not self.root:
+                return
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_pane_cfg_after", None) is not None:
+                self.root.after_cancel(self._pane_cfg_after)
+        except Exception:
+            pass
+        try:
+            self._pane_cfg_after = self.root.after(80, self._ensure_results_pane)
+        except Exception:
+            self._ensure_results_pane()
+
+    def _ensure_results_pane(self) -> None:
+        """Force Results summary to a visible width (~35% or at least minsize)."""
+        body = getattr(self, "_body", None)
+        results = getattr(self, "results_fr", None)
+        if body is None or results is None:
+            return
+        try:
+            body.update_idletasks()
+            total = int(body.winfo_width())
+            if total < 200:
+                return
+            min_w = int(getattr(self, "_RESULTS_PANE_MIN", 360))
+            ratio = float(getattr(self, "_RESULTS_PANE_RATIO", 0.35))
+            want = max(min_w, int(total * ratio))
+            want = min(want, max(min_w, total - 280))
+            sash = max(280, total - want)
+            try:
+                body.sashpos(0, sash)
+            except Exception:
+                try:
+                    body.sash_place(0, sash, 0)
+                except Exception:
+                    pass
+            try:
+                body.pane(results, minsize=min_w)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _building_plots(self) -> None:
         try:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
+            from tkinter import Canvas as TkCanvas
 
-            self.fig = Figure(figsize=(8, 2.8), dpi=100)
-            self.ax = self.fig.add_subplot(111)
-            self.ax.set_title("CPU % / Mem % / Disk MB/s")
+            # Single-row legend outside the plot (tk labels, never clips)
+            for color, label in (
+                (PLOT_CPU, "CPU %"),
+                (PLOT_MEM, "Mem %"),
+                (PLOT_DISK, "Disk MB/s"),
+                (PLOT_FPS, "GPU FPS"),
+            ):
+                swatch = TkCanvas(
+                    self.plot_legend, width=16, height=10, highlightthickness=0, bg=PLOT_BG
+                )
+                swatch.pack(side="left", padx=(0, 4))
+                swatch.create_line(1, 5, 15, 5, fill=color, width=2)
+                ttk.Label(self.plot_legend, text=label, style="Muted.TLabel").pack(
+                    side="left", padx=(0, 14)
+                )
+
+            self.fig = Figure(figsize=(6.8, 2.55), dpi=100)
+            # Compact margins so graph + results fit at 1280x800 / restored sizes
+            self.ax = self.fig.add_axes([0.12, 0.20, 0.72, 0.72])
+            self.ax2 = self.ax.twinx()
+            style_matplotlib(self.fig, self.ax)
+            style_matplotlib(self.fig, self.ax2)
+            self.ax.set_xlabel("Seconds", fontsize=8)
+            self.ax.set_ylabel("CPU · Mem % · Disk", fontsize=8)
+            self.ax2.set_ylabel("GPU FPS", fontsize=8, color=PLOT_FPS)
+            try:
+                self.ax2.yaxis.label.set_color(PLOT_FPS)
+                self.ax2.tick_params(axis="y", colors=PLOT_FPS)
+            except Exception:
+                pass
             self.ax.set_ylim(0, 100)
-            (self.line_cpu,) = self.ax.plot([], [], label="CPU %", color="#38bdf8")
-            (self.line_mem,) = self.ax.plot([], [], label="Mem %", color="#a78bfa")
-            (self.line_disk,) = self.ax.plot([], [], label="Disk MB/s", color="#fbbf24")
-            (self.line_fps,) = self.ax.plot([], [], label="GPU FPS", color="#4ade80")
-            self.ax.legend(loc="upper right", fontsize=8)
-            self.fig.tight_layout()
+            self.ax2.set_ylim(0, 120)
+            self.ax.set_xlim(0, 60)
+            (self.line_cpu,) = self.ax.plot([], [], color=PLOT_CPU, linewidth=1.6)
+            (self.line_mem,) = self.ax.plot([], [], color=PLOT_MEM, linewidth=1.6)
+            (self.line_disk,) = self.ax.plot([], [], color=PLOT_DISK, linewidth=1.4)
+            (self.line_fps,) = self.ax2.plot([], [], color=PLOT_FPS, linewidth=1.8)
             self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_fr)
-            self.canvas.get_tk_widget().pack(fill="both", expand=True)
+            ctk = self.canvas.get_tk_widget()
+            # Don't let the canvas advertise a huge natural width (collapses Results on maximize).
+            try:
+                ctk.configure(width=400, height=220)
+            except Exception:
+                pass
+            ctk.pack(fill="both", expand=True)
             self._plot_times: list[float] = []
             self._plot_cpu: list[float] = []
             self._plot_mem: list[float] = []
@@ -287,10 +532,173 @@ class BotlabsBenchApp:
             ttk.Label(self.plot_fr, text="Live graphs unavailable (matplotlib missing)").pack()
             self._has_mpl = False
 
+    def _set_custom_visible(self, visible: bool) -> None:
+        """Show Custom options only when Custom mode is selected."""
+        try:
+            mapped = bool(self.custom_fr.winfo_ismapped())
+        except Exception:
+            mapped = False
+        if visible and not mapped:
+            try:
+                self.custom_fr.pack(fill="x", pady=(0, 5), after=self.mode_fr)
+            except Exception:
+                self.custom_fr.pack(fill="x", pady=(0, 5))
+        elif not visible and mapped:
+            self.custom_fr.pack_forget()
+
     def _mode_changed(self) -> None:
         if self.mode.get() != "custom":
             self.single_pass.set(False)
+        self._set_custom_visible(self.mode.get() == "custom")
         self._on_custom_changed()
+
+    def _refresh_plot(self) -> None:
+        if not getattr(self, "_has_mpl", False):
+            return
+        self.line_cpu.set_data(self._plot_times, self._plot_cpu)
+        self.line_mem.set_data(self._plot_times, self._plot_mem)
+        self.line_disk.set_data(self._plot_times, self._plot_disk)
+        self.line_fps.set_data(self._plot_times, self._plot_fps)
+        if self._plot_times:
+            self.ax.set_xlim(self._plot_times[0], max(self._plot_times[-1], self._plot_times[0] + 1))
+        # Keep % axis fixed; scale FPS axis to data
+        self.ax.set_ylim(0, 100)
+        fps_max = max(self._plot_fps) if self._plot_fps else 0
+        self.ax2.set_ylim(0, max(120.0, fps_max * 1.15 if fps_max else 120.0))
+        self.canvas.draw_idle()
+
+    def _fmt_num(self, value: Any, *, decimals: int = 0, suffix: str = "") -> str:
+        if value is None or value == "":
+            return "—"
+        try:
+            n = float(value)
+        except Exception:
+            return str(value)
+        if decimals <= 0:
+            body = f"{int(round(n)):,}"
+        else:
+            body = format(n, f",.{decimals}f")
+        return f"{body}{suffix}"
+
+    def _clear_results_rows(self) -> None:
+        for w in getattr(self, "_results_row_widgets", []) or []:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._results_row_widgets = []
+
+    def _add_results_row(self, label: str, value: str) -> None:
+        r = len(self._results_row_widgets) // 2
+        lab = ttk.Label(self.results_table, text=label, style="Metric.TLabel")
+        lab.grid(row=r, column=0, sticky="w", padx=(0, 12), pady=2)
+        val = ttk.Label(self.results_table, text=value, style="MetricValue.TLabel")
+        val.grid(row=r, column=1, sticky="w", pady=2)
+        self._results_row_widgets.extend([lab, val])
+
+    def _set_results_idle(self, status: str, hint: str = "") -> None:
+        self._clear_results_rows()
+        self.results_status.set(status)
+        self.results_hint.set(hint)
+        try:
+            if hint:
+                self.results_hint_lbl.pack(anchor="w", pady=(0, 8))
+            else:
+                self.results_hint_lbl.pack_forget()
+        except Exception:
+            pass
+        self._last_html_path = None
+        try:
+            self.html_btn.configure(state="disabled", text="Open HTML report")
+        except Exception:
+            pass
+
+    def _populate_results_summary(self, state: dict[str, Any]) -> None:
+        """Fill the in-app results panel from a finished (or partial) run state."""
+        self._clear_results_rows()
+        status = str(state.get("status") or "—")
+        elapsed = state.get("elapsed_sec")
+        try:
+            elapsed_s = f"{float(elapsed):.0f}s" if elapsed is not None else "—"
+        except Exception:
+            elapsed_s = str(elapsed)
+        self.results_status.set(f"{status.capitalize()}  ·  {elapsed_s}")
+        self.results_hint.set("")
+        try:
+            self.results_hint_lbl.pack_forget()
+        except Exception:
+            pass
+
+        res = state.get("results") or {}
+        sysinfo = state.get("sysinfo") or {}
+        cpu_name = sysinfo.get("cpu_name") or "—"
+        gpu_name = sysinfo.get("gpu_name") or ((res.get("gpu") or {}).get("gpu") or "—")
+        self._add_results_row("CPU", str(cpu_name))
+        self._add_results_row("GPU", str(gpu_name))
+
+        cpu = res.get("cpu") or {}
+        if cpu:
+            sc = (cpu.get("single_core") or {}).get("score_primes_per_sec")
+            ac = (cpu.get("all_core") or {}).get("score_primes_per_sec")
+            self._add_results_row("CPU single", self._fmt_num(sc, suffix=" primes/s"))
+            self._add_results_row("CPU all-core", self._fmt_num(ac, suffix=" primes/s"))
+        mem = res.get("memory") or {}
+        if mem:
+            bw = mem.get("bandwidth") or {}
+            self._add_results_row("Mem read", self._fmt_num(bw.get("read_mb_s"), decimals=0, suffix=" MB/s"))
+            if bw.get("write_mb_s") is not None:
+                self._add_results_row("Mem write", self._fmt_num(bw.get("write_mb_s"), decimals=0, suffix=" MB/s"))
+        disk = res.get("disk") or {}
+        if disk:
+            seq = disk.get("sequential") or {}
+            self._add_results_row(
+                "Disk seq write", self._fmt_num(seq.get("write_mb_s_avg"), decimals=0, suffix=" MB/s")
+            )
+            if seq.get("read_mb_s_avg") is not None:
+                self._add_results_row(
+                    "Disk seq read", self._fmt_num(seq.get("read_mb_s_avg"), decimals=0, suffix=" MB/s")
+                )
+        net = res.get("network") or {}
+        if net:
+            inet = net.get("internet") or {}
+            self._add_results_row("Internet", self._fmt_num(inet.get("best_mbps"), decimals=0, suffix=" Mbps"))
+        gpu = res.get("gpu") or {}
+        if gpu and gpu.get("fps") is not None:
+            self._add_results_row("GPU FPS avg", self._fmt_num(gpu.get("fps"), decimals=0, suffix=" FPS"))
+
+        paths = state.get("report_paths") or {}
+        html = paths.get("html")
+        if html:
+            hp = Path(str(html))
+            self._last_html_path = hp
+            self.html_btn.configure(state="normal", text=f"Open {hp.name}")
+        else:
+            self._last_html_path = None
+            self.html_btn.configure(state="disabled", text="Open HTML report")
+
+    def _open_last_html(self) -> None:
+        path = self._last_html_path
+        if not path:
+            return
+        # Resolve relative demo paths under results_dir
+        if not path.is_file():
+            cand = results_dir() / path.name
+            if cand.is_file():
+                path = cand
+        try:
+            if path.is_file():
+                if hasattr(os, "startfile"):
+                    os.startfile(str(path))  # type: ignore[attr-defined]
+                else:
+                    import subprocess
+
+                    subprocess.Popen(["xdg-open", str(path)])
+            else:
+                # Fall back to folder when the demo file is not on disk
+                self._open_results()
+        except Exception as e:
+            messagebox.showinfo("Report", f"Could not open:\n{path}\n{e}")
+
 
     def _selected_tests(self) -> list[str]:
         mapping = [
@@ -429,6 +837,10 @@ class BotlabsBenchApp:
         self.test_pct.set(0)
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
+        try:
+            self._set_results_idle("Run in progress…", "Scores appear here when the run finishes or is stopped.")
+        except Exception:
+            pass
         self.status_text.set("Running...")
         self._run_started = time.time()
         self._planned_duration = duration if not single else 120
@@ -490,13 +902,7 @@ class BotlabsBenchApp:
                         self._plot_mem.pop(0)
                         self._plot_disk.pop(0)
                         self._plot_fps.pop(0)
-                    self.line_cpu.set_data(self._plot_times, self._plot_cpu)
-                    self.line_mem.set_data(self._plot_times, self._plot_mem)
-                    self.line_disk.set_data(self._plot_times, self._plot_disk)
-                    self.line_fps.set_data(self._plot_times, self._plot_fps)
-                    self.ax.relim()
-                    self.ax.autoscale_view()
-                    self.canvas.draw_idle()
+                    self._refresh_plot()
             elapsed = time.time() - self._run_started
             if op > 1:
                 total_est = elapsed / (op / 100.0)
@@ -515,25 +921,16 @@ class BotlabsBenchApp:
             self._plot_times.append(sample["t"])
             self._plot_cpu.append(sample["cpu"])
             self._plot_mem.append(sample["mem"])
-            self._plot_disk.append(min(100, sample.get("disk_mb_s", 0)))  # scale loosely on same axis
-            if hasattr(self, "_plot_fps"):
-                self._plot_fps.append(self._plot_fps[-1] if self._plot_fps else 0.0)
-            # Keep last 240 points
+            # Disk MB/s shares left axis with % (clamped for readability)
+            self._plot_disk.append(min(100.0, float(sample.get("disk_mb_s", 0) or 0)))
+            self._plot_fps.append(self._plot_fps[-1] if self._plot_fps else 0.0)
             if len(self._plot_times) > 240:
                 self._plot_times.pop(0)
                 self._plot_cpu.pop(0)
                 self._plot_mem.pop(0)
                 self._plot_disk.pop(0)
-                if hasattr(self, "_plot_fps") and self._plot_fps:
-                    self._plot_fps.pop(0)
-            self.line_cpu.set_data(self._plot_times, self._plot_cpu)
-            self.line_mem.set_data(self._plot_times, self._plot_mem)
-            self.line_disk.set_data(self._plot_times, self._plot_disk)
-            if hasattr(self, "line_fps") and hasattr(self, "_plot_fps"):
-                self.line_fps.set_data(self._plot_times, self._plot_fps)
-            if self._plot_times:
-                self.ax.set_xlim(self._plot_times[0], max(self._plot_times[-1], self._plot_times[0] + 1))
-            self.canvas.draw_idle()
+                self._plot_fps.pop(0)
+            self._refresh_plot()
 
         self.root.after(0, ui)
 
@@ -543,9 +940,13 @@ class BotlabsBenchApp:
         self.overall_pct.set(100 if state.get("status") == "completed" else self.overall_pct.get())
         paths = state.get("report_paths") or {}
         self.status_text.set(
-            f"Done ({state.get('status')}). Reports in BenchResults - HTML: {Path(paths.get('html','')).name}"
+            f"Done ({state.get('status')}). Reports in BenchResults — HTML: {Path(paths.get('html','')).name}"
         )
         self._last_run_state = state
+        try:
+            self._populate_results_summary(state)
+        except Exception as e:
+            log.warning("results summary failed: %s", e)
         if self._selftest:
             log.info("selftest: run finished status=%s", state.get("status"))
             return
@@ -587,8 +988,26 @@ class BotlabsBenchApp:
             return
         out = results_dir() / f"compare-{datetime.now().strftime('%Y%m%d-%H%M%S')}.html"
         try:
-            compare_runs([Path(f) for f in files], out)
-            os.startfile(out)  # type: ignore[attr-defined]
+            paths = [Path(f) for f in files]
+            compare_runs(paths, out)
+            # In-app preview (also used by snapshot / site-shots)
+            try:
+                states = []
+                for p in paths:
+                    with open(p, encoding="utf-8") as fh:
+                        states.append(json.load(fh))
+                _show_compare_preview(self.root, states)
+            except Exception as e:
+                log.warning("compare preview failed: %s", e)
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(out)  # type: ignore[attr-defined]
+                else:
+                    import subprocess
+
+                    subprocess.Popen(["xdg-open", str(out)])
+            except Exception:
+                messagebox.showinfo("Compare", f"Saved:\n{out}")
         except Exception as e:
             messagebox.showerror("Compare", str(e))
 
@@ -604,7 +1023,46 @@ class BotlabsBenchApp:
         except Exception:
             pass
 
+    def _maximize_startup(self) -> None:
+        """Open maximized on normal GUI launch so the layout is not smushed."""
+        try:
+            self.root.update_idletasks()
+            if sys.platform.startswith("win"):
+                self.root.state("zoomed")
+            else:
+                zoomed = False
+                for attempt in (
+                    lambda: self.root.attributes("-zoomed", True),
+                    lambda: self.root.state("zoomed"),
+                    lambda: self.root.wm_attributes("-zoomed", True),
+                ):
+                    try:
+                        attempt()
+                        self.root.update_idletasks()
+                        self.root.update()
+                        if int(self.root.winfo_width()) >= int(self.root.winfo_screenwidth()) - 40:
+                            zoomed = True
+                            break
+                    except Exception:
+                        continue
+                if not zoomed:
+                    sw = int(self.root.winfo_screenwidth())
+                    sh = int(self.root.winfo_screenheight())
+                    # Leave a small margin for WM chrome on real desktops
+                    self.root.geometry(f"{max(sw - 16, 1120)}x{max(sh - 48, 780)}+0+0")
+            self.root.update_idletasks()
+            self.root.update()
+        except Exception as e:
+            log.warning("maximize startup failed: %s", e)
+        try:
+            self.root.after(120, self._ensure_results_pane)
+        except Exception:
+            pass
+
     def run(self) -> None:
+        # Normal interactive launch only — selftest / snapshots set their own geometry.
+        if not self._selftest:
+            self._maximize_startup()
         self.root.mainloop()
 
 
@@ -951,3 +1409,907 @@ def run_gui_selftest(
             print(f"GUI-SELFTEST FAIL  mainloop error: {e}")
             return 1
     return int(getattr(app, "_selftest_exit_code", 1))
+
+
+def _enable_dpi_awareness() -> str:
+    """Ask Windows for per-monitor DPI awareness so ImageGrab matches the window. Returns a note."""
+    if not sys.platform.startswith("win"):
+        return "dpi=n/a (non-Windows)"
+    try:
+        import ctypes
+
+        # Prefer Per-Monitor V2 (Windows 10+), then Per-Monitor, then System DPI.
+        for awareness in (2, 2, 1):  # PROCESS_PER_MONITOR_DPI_AWARE_V2 / PER_MONITOR / SYSTEM
+            try:
+                # SetProcessDpiAwarenessContext(-4) = PER_MONITOR_AWARE_V2 on Win10 1703+
+                if awareness == 2:
+                    try:
+                        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+                        return "dpi=PerMonitorV2 (SetProcessDpiAwarenessContext)"
+                    except Exception:
+                        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+                        return "dpi=PerMonitor (SetProcessDpiAwareness=2)"
+                ctypes.windll.shcore.SetProcessDpiAwareness(awareness)
+                return f"dpi=SetProcessDpiAwareness({awareness})"
+            except Exception:
+                continue
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+            return "dpi=SetProcessDPIAware (legacy)"
+        except Exception as e:
+            return f"dpi=unavailable ({e})"
+    except Exception as e:
+        return f"dpi=error ({e})"
+
+
+def _window_bbox(root: Tk) -> tuple[int, int, int, int]:
+    """Return (left, top, right, bottom) in screen pixels for ImageGrab."""
+    root.update_idletasks()
+    root.update()
+    try:
+        root.lift()
+        root.attributes("-topmost", True)
+        root.update()
+        root.attributes("-topmost", False)
+    except Exception:
+        pass
+    # Prefer win32 GetWindowRect for the true outer frame on Windows
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = int(root.winfo_id())
+            # On Tk, winfo_id is the client HWND; climb to the toplevel frame.
+            GA_ROOT = 2
+            try:
+                hwnd = int(ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT)) or hwnd
+            except Exception:
+                pass
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+        except Exception:
+            pass
+    x = int(root.winfo_rootx())
+    y = int(root.winfo_rooty())
+    w = int(root.winfo_width())
+    h = int(root.winfo_height())
+    return x, y, x + w, y + h
+
+
+def _force_window_paint(root: Tk) -> None:
+    """Flush Tk + (on Windows) ask DWM to repaint so ImageGrab is not stale."""
+    try:
+        root.update_idletasks()
+        root.update()
+        root.lift()
+    except Exception:
+        pass
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            hwnd = int(root.winfo_id())
+            try:
+                hwnd = int(ctypes.windll.user32.GetAncestor(hwnd, 2)) or hwnd
+            except Exception:
+                pass
+            # RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_FRAME
+            ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0100 | 0x0100 | 0x0080 | 0x0400 | 0x0001)
+            ctypes.windll.user32.UpdateWindow(hwnd)
+        except Exception:
+            pass
+    try:
+        root.update_idletasks()
+        root.update()
+    except Exception:
+        pass
+
+
+def _format_compare_value(label: str, value: Any) -> str:
+    """Format compare-preview cells like the Results summary (commas + units)."""
+    if value is None or value == "":
+        return "—"
+    numeric_specs = {
+        "CPU all-core primes/s": (0, " primes/s"),
+        "Mem read MB/s": (0, " MB/s"),
+        "Disk seq write MB/s": (0, " MB/s"),
+        "Internet Mbps": (0, " Mbps"),
+        "GPU FPS avg": (0, " FPS"),
+    }
+    if label in numeric_specs:
+        decimals, suffix = numeric_specs[label]
+        try:
+            n = float(value)
+        except Exception:
+            return str(value)
+        if decimals <= 0:
+            body = f"{int(round(n)):,}"
+        else:
+            body = format(n, f",.{decimals}f")
+        return f"{body}{suffix}"
+    return str(value)
+
+
+def _grab_window_png(root: Tk, path: Path, *, settle_ms: int = 250) -> tuple[int, int]:
+    """Capture the Tk window (or a focused Toplevel) to PNG. Returns (width, height)."""
+    from PIL import ImageGrab
+
+    _force_window_paint(root)
+    # Short settle so ttk/matplotlib finish painting
+    deadline = time.time() + max(0.05, settle_ms / 1000.0)
+    while time.time() < deadline:
+        try:
+            root.update()
+        except Exception:
+            break
+        time.sleep(0.02)
+    _force_window_paint(root)
+    bbox = _window_bbox(root)
+    img = ImageGrab.grab(bbox=bbox, all_screens=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "PNG")
+    return img.size[0], img.size[1]
+
+
+def _grab_widget_png(widget, path: Path, *, settle_ms: int = 200) -> tuple[int, int]:
+    """Capture a specific Tk widget (Toplevel or Frame) by its screen bbox."""
+    from PIL import ImageGrab
+
+    widget.update_idletasks()
+    widget.update()
+    deadline = time.time() + max(0.05, settle_ms / 1000.0)
+    while time.time() < deadline:
+        try:
+            widget.update()
+        except Exception:
+            break
+        time.sleep(0.02)
+    try:
+        widget.lift()
+        widget.attributes("-topmost", True)
+        widget.update()
+    except Exception:
+        pass
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = int(widget.winfo_id())
+            GA_ROOT = 2
+            try:
+                hwnd = int(ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT)) or hwnd
+            except Exception:
+                pass
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                bbox = (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
+                img = ImageGrab.grab(bbox=bbox, all_screens=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                img.save(path, "PNG")
+                try:
+                    widget.attributes("-topmost", False)
+                except Exception:
+                    pass
+                return img.size[0], img.size[1]
+        except Exception:
+            pass
+    x = int(widget.winfo_rootx())
+    y = int(widget.winfo_rooty())
+    w = max(1, int(widget.winfo_width()))
+    h = max(1, int(widget.winfo_height()))
+    bbox = (x, y, x + w, y + h)
+    img = ImageGrab.grab(bbox=bbox, all_screens=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "PNG")
+    try:
+        widget.attributes("-topmost", False)
+    except Exception:
+        pass
+    return img.size[0], img.size[1]
+
+
+def _show_capture_dialog(parent: Tk, title: str, message: str, kind: str = "warning") -> Any:
+    """Non-blocking Toplevel that mimics a messagebox so snapshot mode never stalls."""
+    from tkinter import Toplevel
+
+    dlg = Toplevel(parent)
+    dlg.title(title)
+    dlg.transient(parent)
+    dlg.resizable(False, False)
+    # Place near parent so ImageGrab of the dialog alone is easy
+    try:
+        px = parent.winfo_rootx() + 80
+        py = parent.winfo_rooty() + 120
+        dlg.geometry(f"+{px}+{py}")
+    except Exception:
+        pass
+    colors = {
+        "warning": ("#fbbf24", "Warning"),
+        "error": ("#f87171", "Error"),
+        "info": ("#38bdf8", "Info"),
+    }
+    accent, label = colors.get(kind, colors["info"])
+    fr = ttk.Frame(dlg, padding=16)
+    fr.pack(fill="both", expand=True)
+    ttk.Label(fr, text=label, foreground=accent, font=ui_font(11, "bold")).pack(anchor="w")
+    ttk.Label(fr, text=message, wraplength=420, justify="left").pack(anchor="w", pady=(8, 12))
+    ttk.Button(fr, text="OK", command=dlg.destroy).pack(anchor="e")
+    dlg.update_idletasks()
+    dlg.update()
+    return dlg
+
+
+def _show_compare_preview(parent: Tk, states: list[dict[str, Any]]) -> Any:
+    """In-app compare preview (real Compare opens HTML in a browser)."""
+    from tkinter import Toplevel
+
+    dlg = Toplevel(parent)
+    dlg.title("Botlabs Bench - Compare (preview)")
+    dlg.transient(parent)
+    try:
+        px = parent.winfo_rootx() + 40
+        py = parent.winfo_rooty() + 40
+        dlg.geometry(f"900x560+{px}+{py}")
+    except Exception:
+        dlg.geometry("900x560")
+    outer = ttk.Frame(dlg, padding=12)
+    outer.pack(fill="both", expand=True)
+
+    versions = []
+    for s in states:
+        v = s.get("bench_version") or s.get("version") or "unknown"
+        name = (s.get("sysinfo") or {}).get("computer_name") or s.get("run_id") or "?"
+        versions.append((str(name), str(v)))
+    unique = {v for _, v in versions}
+    if len(unique) > 1:
+        warn = ttk.LabelFrame(outer, text="Warning", padding=8)
+        warn.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            warn,
+            text=(
+                "Benchmark versions differ — scores may not be directly comparable. "
+                "Compare only runs with the same bench_version when possible."
+            ),
+            foreground="#fbbf24",
+            wraplength=660,
+            justify="left",
+        ).pack(anchor="w")
+        for n, v in versions:
+            ttk.Label(warn, text=f"  • {n}: bench_version={v}", foreground="#fbbf24").pack(anchor="w")
+
+    ttk.Label(outer, text="Botlabs Bench - Side-by-side", font=ui_font(14, "bold")).pack(anchor="w")
+    ttk.Label(outer, text=f"{len(states)} runs compared", style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+
+    # Simple metric table
+    metrics = [
+        ("Bench version", lambda s: s.get("bench_version")),
+        ("Computer", lambda s: (s.get("sysinfo") or {}).get("computer_name")),
+        ("CPU", lambda s: (s.get("sysinfo") or {}).get("cpu_name")),
+        ("CPU all-core primes/s", lambda s: ((s.get("results") or {}).get("cpu") or {}).get("all_core", {}).get("score_primes_per_sec")),
+        ("Mem read MB/s", lambda s: ((s.get("results") or {}).get("memory") or {}).get("bandwidth", {}).get("read_mb_s")),
+        ("Disk seq write MB/s", lambda s: ((s.get("results") or {}).get("disk") or {}).get("sequential", {}).get("write_mb_s_avg")),
+        ("Internet Mbps", lambda s: ((s.get("results") or {}).get("network") or {}).get("internet", {}).get("best_mbps")),
+        ("GPU FPS avg", lambda s: ((s.get("results") or {}).get("gpu") or {}).get("fps")),
+    ]
+    table = ttk.Frame(outer)
+    table.pack(fill="both", expand=True)
+    ttk.Label(table, text="Metric", font=ui_font(9, "bold")).grid(row=0, column=0, sticky="w", padx=4, pady=2)
+    for col, s in enumerate(states, start=1):
+        name = (s.get("sysinfo") or {}).get("computer_name") or s.get("run_id") or f"Run {col}"
+        ttk.Label(table, text=str(name), font=ui_font(9, "bold")).grid(row=0, column=col, sticky="w", padx=4)
+
+    for r, (label, getter) in enumerate(metrics, start=1):
+        ttk.Label(table, text=label).grid(row=r, column=0, sticky="w", padx=4, pady=1)
+        for col, s in enumerate(states, start=1):
+            raw = getter(s)
+            ttk.Label(table, text=_format_compare_value(label, raw)).grid(
+                row=r, column=col, sticky="w", padx=4
+            )
+
+    ttk.Button(outer, text="Close", command=dlg.destroy).pack(anchor="e", pady=(8, 0))
+    dlg.update_idletasks()
+    dlg.update()
+    return dlg
+
+
+def _demo_result_state(*, run_id: str, computer: str, bench_version: str, scale: float = 1.0) -> dict[str, Any]:
+    """Synthetic result JSON used only by --render-snapshots (no personal data)."""
+    return {
+        "run_id": run_id,
+        "bench_version": bench_version,
+        "app_version": bench_version,
+        "status": "completed",
+        "elapsed_sec": int(600 * scale),
+        "sysinfo": {
+            "computer_name": computer,
+            "cpu_name": "Demo CPU 8C/16T @ 3.60 GHz",
+            "ram_total_gb": 32,
+            "os": "Demo OS",
+            "gpu_name": "Demo GPU",
+        },
+        "results": {
+            "cpu": {
+                "single_core": {"score_primes_per_sec": round(18500 * scale, 1)},
+                "all_core": {"score_primes_per_sec": round(142000 * scale, 1)},
+                "sustained": {"throttle_drop_pct": round(4.2 / max(scale, 0.5), 1)},
+            },
+            "memory": {
+                "bandwidth": {
+                    "read_mb_s": round(28500 * scale, 1),
+                    "write_mb_s": round(26100 * scale, 1),
+                },
+                "latency_ns": round(72.5 / max(scale, 0.5), 1),
+            },
+            "disk": {
+                "sequential": {
+                    "read_mb_s_avg": round(3200 * scale, 1),
+                    "write_mb_s_avg": round(2800 * scale, 1),
+                },
+                "random_4k": {"read_iops": int(450000 * scale)},
+            },
+            "network": {
+                "internet": {"best_mbps": round(940 * scale, 1)},
+                "lan": {"write_mb_s": round(110 * scale, 1)},
+            },
+            "gpu": {
+                "fps": round(6200 * scale, 1),
+                "fps_1pct_low": round(4800 * scale, 1),
+                "gpu_score": round(8800 * scale, 1),
+            },
+        },
+        "report_paths": {
+            "html": f"BenchResults/{run_id}.html",
+            "csv": f"BenchResults/{run_id}.csv",
+            "json": f"BenchResults/{run_id}.json",
+        },
+    }
+
+
+def _apply_demo_running(app: "BotlabsBenchApp") -> None:
+    """Paint progress bars + live graph with made-up sensor samples (no real bench)."""
+    import math
+
+    app.start_btn.configure(state="disabled")
+    app.stop_btn.configure(state="normal")
+    app.status_text.set("Running... | GPU 6124 FPS (Demo GPU)")
+    app.current_test.set("gpu: shader load level 3/5")
+    app.test_pct.set(62.0)
+    app.overall_pct.set(48.0)
+    app.test_pct_lbl.configure(text="62%")
+    app.overall_pct_lbl.configure(text="48%")
+    app.eta_text.set("5m 12s remaining")
+    app.temps_text.set("CPU 71°C · GPU 64°C")
+    app.temps_short.set("CPU 71°C · GPU 64°C")
+    try:
+        app._set_results_idle("Run in progress…", "Scores appear here when the run finishes or is stopped.")
+    except Exception:
+        pass
+    app._run_started = time.time() - 280
+    if getattr(app, "_has_mpl", False):
+        app._plot_times.clear()
+        app._plot_cpu.clear()
+        app._plot_mem.clear()
+        app._plot_disk.clear()
+        if hasattr(app, "_plot_fps"):
+            app._plot_fps.clear()
+        for i in range(60):
+            t = float(i)
+            app._plot_times.append(t)
+            app._plot_cpu.append(55 + 30 * math.sin(i / 7.0) + (i % 5))
+            app._plot_mem.append(40 + 10 * math.cos(i / 11.0))
+            app._plot_disk.append(min(100, 20 + 40 * abs(math.sin(i / 9.0))))
+            if hasattr(app, "_plot_fps"):
+                app._plot_fps.append(5000 + 800 * math.sin(i / 5.0))
+        app._refresh_plot()
+    try:
+        app._ensure_results_pane()
+    except Exception:
+        pass
+    app.root.update_idletasks()
+    app.root.update()
+
+
+def _apply_demo_partial(app: "BotlabsBenchApp") -> None:
+    """Stopped / Save partial — must look clearly different from the running demo."""
+    app.start_btn.configure(state="normal")
+    app.stop_btn.configure(state="disabled")
+    app.status_text.set("Done (cancelled). Partial reports saved.")
+    app.current_test.set("gpu: stopped")
+    # Distinct from running (62/48) so even truncated grabs differ
+    app.test_pct.set(100.0)
+    app.overall_pct.set(55.0)
+    app.test_pct_lbl.configure(text="100%")
+    app.overall_pct_lbl.configure(text="55%")
+    app.eta_text.set("stopped")
+    app.temps_text.set("CPU 58°C · GPU 51°C")
+    app.temps_short.set("CPU 58°C · GPU 51°C")
+    demo = _demo_result_state(
+        run_id="demo-run-partial", computer="DEMO-WORKSTATION", bench_version=BENCH_VERSION, scale=0.55
+    )
+    demo["status"] = "cancelled"
+    demo["elapsed_sec"] = 280
+    demo["report_paths"] = {"html": "BenchResults/demo-run-partial.html"}
+    # Trim unfinished suites for a partial look
+    demo["results"] = {k: v for k, v in (demo.get("results") or {}).items() if k in ("cpu", "memory", "disk")}
+    try:
+        app._populate_results_summary(demo)
+    except Exception:
+        pass
+    # Prefer a clean stopped layout (hide Custom options) so Results is fully visible
+    try:
+        app.mode.set("quick")
+        app._mode_changed()
+    except Exception:
+        pass
+    try:
+        app._ensure_results_pane()
+    except Exception:
+        pass
+    _force_window_paint(app.root)
+    # Extra idle flush — Windows DWM can otherwise hand ImageGrab a stale frame
+    deadline = time.time() + 0.35
+    while time.time() < deadline:
+        try:
+            app.root.update()
+        except Exception:
+            break
+        time.sleep(0.02)
+    _force_window_paint(app.root)
+
+
+def _apply_demo_finished(app: "BotlabsBenchApp") -> None:
+    app.start_btn.configure(state="normal")
+    app.stop_btn.configure(state="disabled")
+    app.overall_pct.set(100.0)
+    app.test_pct.set(100.0)
+    app.test_pct_lbl.configure(text="100%")
+    app.overall_pct_lbl.configure(text="100%")
+    app.current_test.set("—")
+    app.eta_text.set("0m 0s remaining")
+    app.status_text.set(
+        "Done. Reports saved."
+    )
+    app.temps_text.set("CPU 48°C · GPU 42°C")
+    app.temps_short.set("CPU 48°C · GPU 42°C")
+    demo = _demo_result_state(
+        run_id="demo-run-complete", computer="DEMO-WORKSTATION", bench_version=BENCH_VERSION, scale=1.0
+    )
+    demo["report_paths"] = {
+        "html": "BenchResults/demo-run-complete.html",
+        "csv": "BenchResults/demo-run-complete.csv",
+        "json": "BenchResults/demo-run-complete.json",
+    }
+    try:
+        app._populate_results_summary(demo)
+    except Exception:
+        pass
+    # Prefer a clean finished layout (hide Custom options)
+    try:
+        app.mode.set("quick")
+        app._mode_changed()
+    except Exception:
+        pass
+    try:
+        app._ensure_results_pane()
+    except Exception:
+        pass
+    app.root.update_idletasks()
+    app.root.update()
+
+
+def run_render_snapshots(outdir: str | Path) -> int:
+    """Hidden GUI screenshot mode: walk key states, save PNGs + snapshot-manifest.txt.
+
+    Usage: BotlabsBench --render-snapshots <outdir>
+    Uses only synthetic demo data (no real benchmark). Exits 0 on success.
+    """
+    out = Path(outdir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    log_path = out / "snapshot-log.txt"
+    manifest_lines: list[str] = []
+    log_lines: list[str] = []
+
+    def emit(msg: str) -> None:
+        print(msg, flush=True)
+        log_lines.append(msg)
+
+    dpi_note = _enable_dpi_awareness()
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    emit(f"Botlabs Bench --render-snapshots  out={out}")
+    emit(f"time={stamp}  version={APP_VERSION}  {dpi_note}")
+    manifest_lines.append(f"Botlabs Bench GUI snapshots  {stamp}")
+    manifest_lines.append(f"app_version={APP_VERSION}  bench_version={BENCH_VERSION}")
+    manifest_lines.append(dpi_note)
+    manifest_lines.append("Synthetic demo data only. No real benchmark run.")
+    manifest_lines.append("")
+
+    entries: list[tuple[str, str]] = []  # (filename, description)
+
+    last_main_md5: list[str] = [""]
+
+    def save_main(app: "BotlabsBenchApp", filename: str, description: str, *, settle_ms: int = 300) -> None:
+        import hashlib
+
+        path = out / filename
+        try:
+            # Retry once if this frame is byte-identical to the previous main shot
+            # (Windows DWM sometimes returns a stale compositor buffer).
+            for attempt in range(2):
+                w, h = _grab_window_png(app.root, path, settle_ms=settle_ms + attempt * 250)
+                digest = hashlib.md5(path.read_bytes()).hexdigest() if path.is_file() else ""
+                if digest and digest == last_main_md5[0] and attempt == 0:
+                    emit(f"WARN {filename}: identical to previous main shot — forcing redraw and retry")
+                    _force_window_paint(app.root)
+                    try:
+                        # Nudge title so the frame definitely changes
+                        title = app.root.title()
+                        app.root.title(title + " ")
+                        app.root.update()
+                        app.root.title(title)
+                        app.root.update()
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+                    continue
+                last_main_md5[0] = digest
+                break
+            size = path.stat().st_size if path.is_file() else 0
+            entries.append((filename, description))
+            manifest_lines.append(f"{filename}  ({w}x{h}, {size} bytes)")
+            manifest_lines.append(f"  {description}")
+            manifest_lines.append("")
+            emit(f"OK  {filename}  {w}x{h}  {description}")
+        except Exception as e:
+            emit(f"FAIL {filename}: {e}")
+            log.exception("snapshot capture failed for %s", filename)
+            manifest_lines.append(f"{filename}  CAPTURE FAILED: {e}")
+            manifest_lines.append(f"  {description}")
+            manifest_lines.append("")
+
+    def save_widget(widget, filename: str, description: str) -> None:
+        path = out / filename
+        try:
+            w, h = _grab_widget_png(widget, path)
+            size = path.stat().st_size if path.is_file() else 0
+            entries.append((filename, description))
+            manifest_lines.append(f"{filename}  ({w}x{h}, {size} bytes)")
+            manifest_lines.append(f"  {description}")
+            manifest_lines.append("")
+            emit(f"OK  {filename}  {w}x{h}  {description}")
+        except Exception as e:
+            emit(f"FAIL {filename}: {e}")
+            log.exception("snapshot widget capture failed for %s", filename)
+            manifest_lines.append(f"{filename}  CAPTURE FAILED: {e}")
+            manifest_lines.append(f"  {description}")
+            manifest_lines.append("")
+
+    # Avoid real modal messageboxes during snapshot walks that touch validation.
+    _install_silent_dialogs()
+
+    app = BotlabsBenchApp(selftest=True)
+    try:
+        app.root.title(f"Botlabs Bench {APP_VERSION}")
+        # Maximize so --render-snapshots verifies the default maximized layout.
+        # (Site-shots keep a fixed geometry for consistent website images.)
+        try:
+            app._maximize_startup()
+        except Exception:
+            app.root.geometry("1280x900")
+        app.root.update_idletasks()
+        app.root.update()
+        try:
+            app._ensure_results_pane()
+        except Exception:
+            pass
+        time.sleep(0.15)
+
+        # --- Mode screens ---
+        app.mode.set("quick")
+        app._mode_changed()
+        app.root.update()
+        save_main(app, "01-mode-quick.png", "Fresh launch — Quick (10 minutes) mode selected.")
+
+        app.mode.set("detailed")
+        app._mode_changed()
+        app.root.update()
+        save_main(app, "02-mode-detailed.png", "Detailed (1 hour) mode selected.")
+
+        app.mode.set("custom")
+        app._mode_changed()
+        app.single_pass.set(False)
+        app.custom_hours.set(0)
+        app.custom_minutes.set(30)
+        for var in (app.test_cpu, app.test_memory, app.test_disk, app.test_network, app.test_gpu):
+            var.set(True)
+        app.lan_enabled.set(True)
+        app._on_custom_changed()
+        app.root.update()
+        save_main(
+            app,
+            "03-mode-custom-all-options.png",
+            "Custom mode with all tests + duration + disk/LAN options visible.",
+        )
+
+        # --- Validation error dialogs (non-blocking stand-ins) ---
+        app.mode.set("custom")
+        for var in (app.test_cpu, app.test_memory, app.test_disk, app.test_network, app.test_gpu):
+            var.set(False)
+        app._on_custom_changed()
+        msg_no_tests = "Select at least one test (CPU, Memory, Disk, Network, or Graphics)."
+        try:
+            app.custom_hint.set(msg_no_tests)
+        except Exception:
+            pass
+        dlg = _show_capture_dialog(app.root, "Botlabs Bench", msg_no_tests, kind="warning")
+        save_widget(dlg, "04-error-no-tests.png", "Validation: no tests selected.")
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+
+        for var in (app.test_cpu, app.test_memory, app.test_disk, app.test_network, app.test_gpu):
+            var.set(True)
+        app.custom_hours.set(0)
+        app.custom_minutes.set(0)
+        app.single_pass.set(False)
+        app._on_custom_changed()
+        msg_short = (
+            "Custom duration is too short for 5 selected test(s). "
+            "Minimum is 2 minute(s) (at least 60s total, and 30s per test). "
+            "You entered 0s. Increase hours/minutes, select fewer tests, or turn on Single pass."
+        )
+        try:
+            app.custom_hint.set(msg_short)
+        except Exception:
+            pass
+        dlg = _show_capture_dialog(app.root, "Botlabs Bench", msg_short, kind="warning")
+        # Also keep the main window state in a separate shot with the hint text
+        save_main(
+            app,
+            "05-error-duration-too-short-main.png",
+            "Custom mode with duration-too-short hint in the options pane.",
+        )
+        save_widget(dlg, "05b-error-duration-too-short-dialog.png", "Validation dialog: duration too short.")
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+
+        msg_hours = f"Hours must be a whole number between {MIN_HOURS} and {MAX_HOURS}."
+        dlg = _show_capture_dialog(app.root, "Botlabs Bench", msg_hours, kind="warning")
+        save_widget(dlg, "06-error-hours-non-numeric.png", "Validation dialog: hours must be a whole number.")
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+
+        # Restore a sane custom config for running/finished shots
+        app.custom_hours.set(0)
+        app.custom_minutes.set(30)
+        app.single_pass.set(False)
+        for var in (app.test_cpu, app.test_memory, app.test_disk, app.test_network, app.test_gpu):
+            var.set(True)
+        app._on_custom_changed()
+
+        # --- Running with demo progress/graphs (Quick — Custom panel would crowd the body) ---
+        app.mode.set("quick")
+        app._mode_changed()
+        _apply_demo_running(app)
+        save_main(
+            app,
+            "07-running-live-progress.png",
+            "Running state with demo progress bars, ETA, temps, and live sensor graph.",
+            settle_ms=350,
+        )
+
+        # --- Stop / partial ---
+        _apply_demo_partial(app)
+        save_main(
+            app,
+            "08-stopped-partial-results.png",
+            "After Stop / Save partial — cancelled status and partial report name.",
+            settle_ms=450,
+        )
+
+        # --- Finished ---
+        _apply_demo_finished(app)
+        dlg = _show_capture_dialog(
+            app.root,
+            "Botlabs Bench",
+            "Run completed.\nElapsed 612s\n\nResults:\nBenchResults/ (demo)",
+            kind="info",
+        )
+        save_main(app, "09-finished-results.png", "Finished completed run (100% bars, Done status).")
+        save_widget(dlg, "09b-finished-info-dialog.png", "Completion info dialog (stand-in for messagebox).")
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+
+        # --- Compare preview with version mismatch ---
+        demo_a = _demo_result_state(
+            run_id="demo-run-a", computer="DEMO-PC-A", bench_version="1.1.1", scale=1.0
+        )
+        demo_b = _demo_result_state(
+            run_id="demo-run-b", computer="DEMO-PC-B", bench_version="1.0.0", scale=0.82
+        )
+        cmp_dlg = _show_compare_preview(app.root, [demo_a, demo_b])
+        save_widget(
+            cmp_dlg,
+            "10-compare-version-mismatch.png",
+            "Compare preview with two demo runs and bench_version mismatch warning.",
+        )
+        try:
+            cmp_dlg.destroy()
+        except Exception:
+            pass
+
+        # Matching versions for a clean compare
+        demo_c = _demo_result_state(
+            run_id="demo-run-c", computer="DEMO-PC-C", bench_version="1.1.1", scale=1.15
+        )
+        cmp_dlg = _show_compare_preview(app.root, [demo_a, demo_c])
+        save_widget(
+            cmp_dlg,
+            "11-compare-same-version.png",
+            "Compare preview with two demo runs on the same bench_version.",
+        )
+        try:
+            cmp_dlg.destroy()
+        except Exception:
+            pass
+
+        # Compare needs two files warning
+        dlg = _show_capture_dialog(
+            app.root, "Compare", "Pick at least two JSON result files.", kind="warning"
+        )
+        save_widget(dlg, "12-compare-need-two-files.png", "Compare warning when fewer than two files are picked.")
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+
+    finally:
+        try:
+            app.root.destroy()
+        except Exception:
+            pass
+
+    (out / "snapshot-manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+    summary = (
+        f"SNAPSHOTS DONE  count={len(entries)}  out={out}  "
+        f"manifest={out / 'snapshot-manifest.txt'}"
+    )
+    emit(summary)
+    try:
+        log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        print(f"WARN could not write snapshot-log.txt: {e}", flush=True)
+    return 0 if entries else 1
+
+
+def run_site_shots(outdir: str | Path) -> int:
+    """Polished general website screenshots (demo data only) + captions.txt.
+
+    Captures a fixed 1280x800 window covering: main, Custom setup, run in progress,
+    finished results, and Compare. No real hostnames, usernames, paths, IPs, or NAS names.
+    """
+    out = Path(outdir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    captions: list[str] = []
+    log_lines: list[str] = []
+
+    def emit(msg: str) -> None:
+        print(msg, flush=True)
+        log_lines.append(msg)
+
+    dpi_note = _enable_dpi_awareness()
+    emit(f"Botlabs Bench --site-shots  out={out}  {dpi_note}  v={APP_VERSION}")
+    _install_silent_dialogs()
+    app = BotlabsBenchApp(selftest=True)
+    try:
+        app.root.title(f"Botlabs Bench {APP_VERSION}")
+        # Fixed large size for consistent website images (taller so graph+results fit)
+        app.root.geometry("1280x900")
+        app.root.minsize(1280, 900)
+        try:
+            app.root.update_idletasks()
+            app._ensure_results_pane()
+        except Exception:
+            pass
+        # Generic demo sensor / drive labels (no real host data)
+        try:
+            temps_lbl = "Temps n/a" if sys.platform.startswith("win") else "Temps n/a"
+            app.temps_text.set(temps_lbl)
+            app.temps_short.set(temps_lbl)
+            app.admin_text.set("Administrator" if sys.platform.startswith("win") else "Standard user")
+            try:
+                style = "PillAdmin.TLabel" if "Administrator" in app.admin_text.get() else "PillUser.TLabel"
+                app.admin_pill.configure(style=style)
+            except Exception:
+                pass
+            app.drive_labels = ["System (SSD) · 412 GB free", "Data (NVMe) · 1.2 TB free", "Backup share · 8.4 TB free"]
+            app.disk_drive.set(app.drive_labels[0])
+            app.lan_drive.set(app.drive_labels[2])
+            app.lan_enabled.set(True)
+        except Exception:
+            pass
+        app.root.update_idletasks()
+        app.root.update()
+
+        def capture(filename: str, caption: str) -> None:
+            path = out / filename
+            w, h = _grab_window_png(app.root, path, settle_ms=350)
+            captions.append(f"{filename}\t{caption}")
+            emit(f"OK  {filename}  {w}x{h}  {caption}")
+
+        def capture_widget(widget, filename: str, caption: str) -> None:
+            path = out / filename
+            w, h = _grab_widget_png(widget, path, settle_ms=350)
+            captions.append(f"{filename}\t{caption}")
+            emit(f"OK  {filename}  {w}x{h}  {caption}")
+
+        # 1) Main screen — Quick
+        app.mode.set("quick")
+        app._mode_changed()
+        app.status_text.set("Ready")
+        app.current_test.set("—")
+        app.root.update()
+        capture("01-main-quick.png", "Main window — Quick mode ready to start.")
+
+        # 2) Custom setup
+        app.mode.set("custom")
+        app._mode_changed()
+        app.custom_hours.set(0)
+        app.custom_minutes.set(45)
+        app.single_pass.set(False)
+        for var in (app.test_cpu, app.test_memory, app.test_disk, app.test_network, app.test_gpu):
+            var.set(True)
+        app.lan_enabled.set(True)
+        app._on_custom_changed()
+        app.root.update()
+        capture("02-custom-setup.png", "Custom mode — choose tests, duration, disk and LAN targets.")
+
+        # 3) Run in progress with graphs (Quick mode so Custom panel does not eat height)
+        app.mode.set("quick")
+        app._mode_changed()
+        _apply_demo_running(app)
+        app.root.update()
+        capture("03-run-in-progress.png", "Benchmark running — live progress, ETA, and sensor graphs.")
+
+        # 4) Finished results
+        _apply_demo_finished(app)
+        app.root.update()
+        capture("04-finished-results.png", "Completed run — results summary and reports ready.")
+
+        # 5) Compare
+        demo_a = _demo_result_state(
+            run_id="demo-alpha", computer="Workstation-Alpha", bench_version=BENCH_VERSION, scale=1.0
+        )
+        demo_b = _demo_result_state(
+            run_id="demo-beta", computer="Workstation-Beta", bench_version=BENCH_VERSION, scale=1.12
+        )
+        cmp_dlg = _show_compare_preview(app.root, [demo_a, demo_b])
+        # Prefer a full-window look: also leave main behind; capture the compare dialog
+        capture_widget(cmp_dlg, "05-compare.png", "Compare view — side-by-side scores for two sample machines.")
+        try:
+            cmp_dlg.destroy()
+        except Exception:
+            pass
+
+    finally:
+        try:
+            app.root.destroy()
+        except Exception:
+            pass
+
+    (out / "captions.txt").write_text("\n".join(captions) + "\n", encoding="utf-8")
+    try:
+        (out / "site-shots-log.txt").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    emit(f"SITE-SHOTS DONE  count={len(captions)}  out={out}")
+    return 0 if captions else 1

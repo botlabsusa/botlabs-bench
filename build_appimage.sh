@@ -38,6 +38,9 @@ pyinstaller \
   --hidden-import=glcontext \
   --hidden-import=glfw \
   --hidden-import=certifi \
+  --hidden-import=theme \
+  --hidden-import=sv_ttk \
+  --collect-all=sv_ttk \
   --collect-data certifi \
   --collect-all tkinter \
   --collect-all moderngl \
@@ -54,6 +57,13 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/256x256/apps" "$APPD
 cp -a "$DIST/pyi/$PYI_NAME" "$APPDIR/usr/bin/$PYI_NAME"
 cp "$ROOT/assets/botlabsbench.png" "$APPDIR/botlabsbench.png"
 cp "$ROOT/assets/botlabsbench.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/botlabsbench.png"
+mkdir -p "$APPDIR/usr/bin/assets"
+cp "$ROOT/assets/botlabsbench.png" "$ROOT/assets/botlabsbench-128.png" "$ROOT/assets/botlabsbench.ico" "$APPDIR/usr/bin/assets/" 2>/dev/null || true
+# Also beside the onedir tree PyInstaller produced
+if [ -d "$ROOT/build-linux/pyi/BotlabsBench" ]; then
+  mkdir -p "$ROOT/build-linux/pyi/BotlabsBench/assets"
+  cp "$ROOT/assets/"* "$ROOT/build-linux/pyi/BotlabsBench/assets/" 2>/dev/null || true
+fi
 
 # Strip host graphics / display / font / pango libs that MUST come from the host.
 # Bundling fontconfig/freetype/pango/harfbuzz/glib clashes with system pango on Arch

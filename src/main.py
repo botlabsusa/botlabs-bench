@@ -76,6 +76,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     p.add_argument("--selftest-timeout", type=float, default=360.0, help=argparse.SUPPRESS)
+    p.add_argument("--render-snapshots", default="", metavar="OUTDIR", help=argparse.SUPPRESS)
+    p.add_argument("--site-shots", default="", metavar="OUTDIR", help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
@@ -182,6 +184,26 @@ def run_gui_selftest(args: argparse.Namespace) -> int:
     )
 
 
+def run_render_snapshots(args: argparse.Namespace) -> int:
+    from app import run_render_snapshots as _run
+
+    outdir = (args.render_snapshots or "").strip()
+    if not outdir:
+        print("ERROR: --render-snapshots requires an output directory", file=sys.stderr)
+        return 2
+    return _run(outdir)
+
+
+def run_site_shots(args: argparse.Namespace) -> int:
+    from app import run_site_shots as _run
+
+    outdir = (args.site_shots or "").strip()
+    if not outdir:
+        print("ERROR: --site-shots requires an output directory", file=sys.stderr)
+        return 2
+    return _run(outdir)
+
+
 def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     log_path = _setup_logging()
@@ -189,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Botlabs Bench starting log=%s frozen=%s", log_path, getattr(sys, "frozen", False))
     args = _parse_args(argv)
     try:
+        if getattr(args, "site_shots", ""):
+            return run_site_shots(args)
+        if getattr(args, "render_snapshots", ""):
+            return run_render_snapshots(args)
         if args.gui_selftest:
             return run_gui_selftest(args)
         if args.headless:

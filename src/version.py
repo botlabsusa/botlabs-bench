@@ -1,8 +1,8 @@
 """Shared schema / app version for Botlabs Bench (Windows + Linux)."""
 
 # Bump when scoring algorithms, JSON schema, or normalization change.
-APP_VERSION = "1.1.1"
-BENCH_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
+BENCH_VERSION = "1.2.0"
 
 # Notes for Compare / reports when interpreting cross-OS results.
 CPU_METHOD_NOTES = (

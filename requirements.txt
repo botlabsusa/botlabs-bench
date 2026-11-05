@@ -7,3 +7,4 @@ pyinstaller>=6.0
 moderngl>=5.10
 glfw>=2.6
 certifi>=2024.0.0
+sv-ttk>=2.6

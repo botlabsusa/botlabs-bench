@@ -14,7 +14,7 @@ Use it to baseline a new machine, compare upgrades, or spot thermal throttling a
 - **GPU** — built-in OpenGL test via moderngl (Intel / AMD / NVIDIA); no third-party 3D suite required
 - **Network** — Cloudflare download speed test and optional LAN/NAS copy throughput
 - **Modes** — Quick (~10 minutes), Detailed (~1 hour), or Custom (pick tests and duration, or a single pass)
-- **Live UI** — progress, live graphs, and **Stop / Save partial** so cancelled runs still keep partial reports
+- **Live UI** — dark professional theme, maximized window, progress, live graphs (separate GPU FPS axis), Results summary panel, and **Stop / Save partial** so cancelled runs still keep partial reports
 - **Reports** — HTML, CSV, XLSX, and JSON written to `BenchResults` next to the app
 - **Compare** — side-by-side view with a warning when `bench_version` values differ
 - **Headless CLI** — run without a GUI for automation or remote machines
@@ -34,9 +34,10 @@ Get the latest binaries from [GitHub Releases](https://github.com/botlabsusa/bot
 
 ### Windows
 
-1. Download `BotlabsBench.exe` from Releases.
-2. Double-click to open the GUI.
+1. Download `BotlabsBench.exe` from Releases (v1.2.0+ asks for administrator rights on launch).
+2. Double-click to open the GUI; the window opens maximized.
 3. Windows SmartScreen may warn because the binary is not code-signed; choose *More info* → *Run anyway* if you trust the release.
+4. Approve the User Account Control prompt so temperature sensors and full disk tests can work when available.
 
 ### Linux
 
