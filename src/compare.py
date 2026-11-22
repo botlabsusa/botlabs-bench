@@ -67,11 +67,18 @@ METRICS = [
 ]
 
 
+class CompareError(ValueError):
+    """A results file could not be read or parsed for Compare."""
+
+
 def compare_runs(json_paths: list[Path], out_html: Path) -> Path:
     states = []
     for p in json_paths:
-        with open(p, encoding="utf-8") as f:
-            states.append(json.load(f))
+        try:
+            with open(p, encoding="utf-8") as f:
+                states.append(json.load(f))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise CompareError(f"Could not read results file '{Path(p).name}': {e}") from e
 
     headers = "".join(f"<th>{_esc((s.get('sysinfo') or {}).get('computer_name') or s.get('run_id'))}</th>" for s in states)
     rows = []

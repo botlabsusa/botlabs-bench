@@ -12,6 +12,9 @@ BUILD="${ROOT}/build-linux"
 APPDIR="${DIST}/BotlabsBench.AppDir"
 APPIMAGE_OUT="${DIST}/BotlabsBench-x86_64.AppImage"
 PYI_NAME="BotlabsBench"
+APP_VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' "$ROOT/src/version.py")"
+export VERSION="$APP_VERSION"  # appimagetool embeds this in the AppImage metadata
+echo "==> Botlabs Bench ${APP_VERSION}"
 
 rm -rf "$DIST" "$BUILD"
 mkdir -p "$DIST" "$BUILD"
@@ -92,7 +95,7 @@ find "$BUNDLE" -type f \( \
   \) ! -path '*/pillow.libs/*' -print -delete || true
 
 # Desktop entry
-cat > "$APPDIR/botlabsbench.desktop" << 'DESK'
+cat > "$APPDIR/botlabsbench.desktop" << DESK
 [Desktop Entry]
 Type=Application
 Name=Botlabs Bench
@@ -101,6 +104,7 @@ Exec=BotlabsBench
 Icon=botlabsbench
 Categories=Utility;System;
 Terminal=false
+X-AppImage-Version=${APP_VERSION}
 DESK
 cp "$APPDIR/botlabsbench.desktop" "$APPDIR/usr/share/applications/botlabsbench.desktop"
 

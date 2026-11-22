@@ -152,6 +152,13 @@ def _fs_key(path: Path) -> object:
         return None
 
 
+def _same_fs(key: object, other: object) -> bool:
+    """True only when both lookups succeeded and match; unknown (None/"") never matches."""
+    if key is None or other is None or key == "" or other == "":
+        return False
+    return key == other
+
+
 def _probe_writable(dir_path: Path) -> bool:
     try:
         dir_path.mkdir(parents=True, exist_ok=True)
@@ -178,7 +185,7 @@ def resolve_writable_workdir(drive_root: str) -> tuple[Optional[Path], str]:
 
     home = Path.home()
     try:
-        if home.exists() and _fs_key(home) == root_key:
+        if home.exists() and _same_fs(_fs_key(home), root_key):
             candidates.append(home / "BotlabsBench_tmp")
     except Exception:
         pass
@@ -193,14 +200,14 @@ def resolve_writable_workdir(drive_root: str) -> tuple[Optional[Path], str]:
                 continue
             p = Path(val)
             try:
-                if p.exists() and _fs_key(p) == root_key:
+                if p.exists() and _same_fs(_fs_key(p), root_key):
                     candidates.append(p / "BotlabsBench_tmp")
             except Exception:
                 pass
     else:
         for td in (Path(tempfile.gettempdir()), Path("/var/tmp"), Path("/tmp")):
             try:
-                if td.exists() and _fs_key(td) == root_key:
+                if td.exists() and _same_fs(_fs_key(td), root_key):
                     candidates.append(td / "BotlabsBench_tmp")
             except Exception:
                 pass
@@ -218,7 +225,7 @@ def resolve_writable_workdir(drive_root: str) -> tuple[Optional[Path], str]:
 
     # Last resort: unique temp dir under $HOME when it shares the mount
     try:
-        if root_key is not None and home.exists() and _fs_key(home) == root_key:
+        if root_key is not None and home.exists() and _same_fs(_fs_key(home), root_key):
             d = Path(tempfile.mkdtemp(prefix="BotlabsBench_tmp_", dir=str(home)))
             tried.append(str(d))
             if _probe_writable(d):
@@ -335,7 +342,12 @@ def run_disk_tests(
     drive_root: str = "",
 ) -> dict[str, Any]:
     if not drive_root:
-        drive_root = "C:\\" if sys.platform.startswith("win") else "/"
+        if sys.platform.startswith("win"):
+            from validate import windows_default_drive
+
+            drive_root = windows_default_drive()
+        else:
+            drive_root = "/"
     results: dict[str, Any] = {
         "name": "disk",
         "status": "ok",

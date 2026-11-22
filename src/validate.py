@@ -67,10 +67,27 @@ def parse_int_clamped(value, lo: int, hi: int, name: str) -> tuple[Optional[int]
     return n, ""
 
 
+def windows_default_drive() -> str:
+    """System drive (e.g. D:\\ when Windows lives there), else the first existing drive."""
+    candidates: list[str] = []
+    sysdrive = (os.environ.get("SystemDrive") or "").strip().rstrip("\\/")
+    if len(sysdrive) == 2 and sysdrive[1] == ":":
+        candidates.append(sysdrive.upper() + "\\")
+    candidates.append("C:\\")
+    candidates.extend(f"{c}:\\" for c in "DEFGHIJKLMNOPQRSTUVWXYZ")
+    for c in candidates:
+        try:
+            if os.path.isdir(c):
+                return c
+        except OSError:
+            continue
+    return candidates[0]
+
+
 def default_disk_root() -> str:
     import sys
     if sys.platform.startswith("win"):
-        return "C:\\"
+        return windows_default_drive()
     # Prefer /home if distinct and writable, else /
     home = os.path.expanduser("~")
     if home and os.path.isdir(home):
@@ -180,6 +197,17 @@ def validate_run(
     if mode in ("quick", "detailed"):
         cleaned = list(VALID_TESTS)
 
+    if duration_sec is not None:
+        try:
+            ds = float(duration_sec)
+        except (TypeError, ValueError):
+            return ValidationResult(False, "Duration (--duration-sec) must be a whole number of seconds.")
+        if ds <= 0:
+            return ValidationResult(
+                False,
+                f"Duration (--duration-sec) must be a positive number of seconds (got {duration_sec}).",
+            )
+
     if not cleaned:
         return ValidationResult(False, "Select at least one test (CPU, Memory, Disk, Network, or Graphics).")
 
@@ -195,7 +223,7 @@ def validate_run(
         if single:
             dur = 0
         else:
-            if duration_sec is not None and duration_sec > 0:
+            if duration_sec is not None:
                 try:
                     dur = int(duration_sec)
                 except (TypeError, ValueError):
@@ -244,9 +272,12 @@ def validate_run(
     if mode != "custom":
         size_mb = planned_disk_size_mb(False, float(dur) / max(1, len(cleaned)))
 
-    space_ok, space_msg, size_mb = check_disk_space(disk, size_mb)
-    if not space_ok:
-        return ValidationResult(False, space_msg)
+    # Free space for the test file only matters when the Disk test will run.
+    space_msg = ""
+    if "disk" in cleaned:
+        space_ok, space_msg, size_mb = check_disk_space(disk, size_mb)
+        if not space_ok:
+            return ValidationResult(False, space_msg)
 
     lan = None
     if lan_enabled or (lan_drive and str(lan_drive).strip() and str(lan_drive).strip() != "(none)"):

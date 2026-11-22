@@ -53,17 +53,20 @@ def _latency_ns(cancel: CancelCb) -> float:
     nxt[idx[-1]] = idx[0]
 
     steps = 5_000_000
+    done = 0
     i = int(idx[0])
     t0 = time.perf_counter()
     for s in range(steps):
         if (s & 0xFFFFF) == 0 and cancel():
             break
         i = int(nxt[i])
+        done += 1
     dt = max(time.perf_counter() - t0, 1e-9)
     # Keep i live
-    if i < 0:
+    if i < 0 or done == 0:
         return 0.0
-    return (dt / steps) * 1e9
+    # Divide by the steps actually walked so a cancelled run is not understated.
+    return (dt / done) * 1e9
 
 
 def _error_check(size_mb: int, progress: ProgressCb, cancel: CancelCb, base_frac: float) -> dict[str, Any]:

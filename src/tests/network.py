@@ -10,6 +10,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from version import APP_VERSION
+
 ProgressCb = Callable[[str, float, Optional[dict]], None]
 CancelCb = Callable[[], bool]
 
@@ -58,7 +60,7 @@ def _download_speed(url: str, cancel: CancelCb, progress: ProgressCb, frac0: flo
     err = None
     try:
         ctx = _ssl_context()
-        req = urllib.request.Request(url, headers={"User-Agent": "BotlabsBench/1.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": f"BotlabsBench/{APP_VERSION}"})
         with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
             while True:
                 if cancel():

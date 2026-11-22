@@ -15,6 +15,11 @@ $glfwDir = Join-Path $PSScriptRoot "venv\Lib\site-packages\glfw"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build
 Remove-Item -Force -ErrorAction SilentlyContinue BotlabsBench.spec
 
+# Windows file properties (version, company) generated from src\version.py
+$versionFile = Join-Path $PSScriptRoot "version_info.txt"
+& $venvPython (Join-Path $PSScriptRoot "make_version_info.py") $versionFile
+if (-not (Test-Path $versionFile)) { throw "version_info.txt missing" }
+
 Write-Host "Running PyInstaller (onefile, console, UAC admin for headless+GUI)..."
 & $venvPython -m PyInstaller `
   --noconfirm `
@@ -23,6 +28,7 @@ Write-Host "Running PyInstaller (onefile, console, UAC admin for headless+GUI)..
   --console `
   --name BotlabsBench `
   --uac-admin `
+  --version-file $versionFile `
   --icon "$PSScriptRoot\assets\botlabsbench.ico" `
   --add-data "$PSScriptRoot\assets\botlabsbench.ico;assets" `
   --add-data "$PSScriptRoot\assets\botlabsbench-128.png;assets" `

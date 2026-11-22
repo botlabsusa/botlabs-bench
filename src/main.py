@@ -23,12 +23,16 @@ def _writable_base() -> Path:
         base.mkdir(parents=True, exist_ok=True)
         probe = base / ".botlabs_write_probe"
         probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        return base
     except Exception:
         home = Path.home() / "BotlabsBench"
         home.mkdir(parents=True, exist_ok=True)
         return home
+    # The directory is writable; a failed cleanup must not trigger the fallback.
+    try:
+        probe.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return base
 
 
 def _setup_logging() -> Path:
@@ -61,7 +65,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated: cpu,memory,disk,network,gpu",
     )
     p.add_argument("--single-pass", action="store_true", help="One pass of each test (quick check)")
-    p.add_argument("--duration-sec", type=int, default=0, help="Custom duration in seconds")
+    p.add_argument("--duration-sec", type=int, default=None, help="Custom duration in seconds (must be positive)")
     p.add_argument("--minutes", type=float, default=0, help="Custom duration in minutes (alt)")
     p.add_argument("--hours", type=int, default=0, help="Custom duration hours (with --minutes)")
     p.add_argument("--disk-drive", default="", help="Drive/mount root for disk test (e.g. C:\\ or /home)")
@@ -91,6 +95,11 @@ def run_headless(args: argparse.Namespace) -> int:
     results.mkdir(parents=True, exist_ok=True)
 
     tests = [t.strip().lower() for t in args.tests.split(",") if t.strip()]
+    if args.duration_sec is not None and args.duration_sec <= 0:
+        msg = f"--duration-sec must be a positive number of seconds (got {args.duration_sec})."
+        print(f"ERROR: {msg}", file=sys.stderr)
+        log.error("Validation failed: %s", msg)
+        return 1
     duration_sec = args.duration_sec
     hours = args.hours
     minutes = args.minutes

@@ -68,12 +68,16 @@ def app_dir() -> Path:
         base.mkdir(parents=True, exist_ok=True)
         probe = base / ".botlabs_write_probe"
         probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        return base
     except Exception:
         home = Path.home() / "BotlabsBench"
         home.mkdir(parents=True, exist_ok=True)
         return home
+    # The directory is writable; a failed cleanup must not trigger the fallback.
+    try:
+        probe.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return base
 
 
 def results_dir() -> Path:

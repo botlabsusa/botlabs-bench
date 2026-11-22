@@ -53,7 +53,8 @@ class BenchmarkRunner:
             self.sampler.on_sample = on_sensor
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        host = collect_sysinfo().get("computer_name", "PC")
+        sysinfo = collect_sysinfo()
+        host = sysinfo.get("computer_name", "PC")
         self.run_id = f"{host}-{stamp}"
         self.json_path = self.results_dir / f"{self.run_id}.json"
         self.state: dict[str, Any] = {
@@ -69,7 +70,7 @@ class BenchmarkRunner:
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": None,
             "status": "running",
-            "sysinfo": collect_sysinfo(),
+            "sysinfo": sysinfo,
             "results": {},
             "sensor_summary": {},
             "errors": [],

@@ -57,7 +57,7 @@ Useful options:
 - `--mode quick|detailed|custom`
 - `--tests cpu,memory,disk,network,gpu` (comma-separated subset)
 - `--single-pass` — one pass of each selected test
-- `--duration-sec N` — custom timed run (seconds)
+- `--duration-sec N` — custom timed run (seconds; must be a positive number)
 - `--disk-drive PATH` — drive/mount root for the disk test (e.g. `C:\` or `/home`)
 - `--lan-drive PATH` — mapped drive / NAS mount for the LAN copy test
 - `--results-dir PATH` — override results directory
@@ -66,7 +66,16 @@ Results land in `BenchResults` next to the executable (or under `~/BotlabsBench`
 
 ### Development / testing
 
+Unit tests live in `tests/` and do not start the GUI, run real benchmarks, or use the network:
+
+```bash
+pip install -r requirements.txt pytest
+python -m pytest tests
+```
+
 A hidden `--gui-selftest` flag drives a short Custom GUI run, presses Stop, and checks that partial reports were saved. It is intended for automation, not end users.
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Build from source
 
